@@ -22,6 +22,7 @@ use_proto_plus: True
         f.write(yaml_text)
     return GoogleAdsClient.load_from_storage(path)
 
+# ----- MCP tools -----
 mcp = FastMCP("GoogleAds-MCP")
 
 @mcp.tool()
@@ -46,19 +47,43 @@ def search(customer_id: str, query: str, page_size: int = 50):
             break
     return rows
 
-# Simple bearer auth so only your agent can call it
-class BearerAuth(BaseHTTPMiddleware):
-    async def dispatch(self, request, call_next):
-        required = os.environ.get("MCP_BEARER_TOKEN")
-        if required:
-            auth = request.headers.get("authorization", "")
-            if auth != f"Bearer {required}":
-                return JSONResponse({"error": "Unauthorized"}, status_code=401)
-        return await call_next(request)
-
+# ----- Health -----
 async def healthz(_):
     return PlainTextResponse("ok")
 
-# Expose Streamable HTTP MCP at /mcp
-app = Starlette(routes=[Route("/healthz", healthz), Mount("/mcp", mcp.streamable_http_app())])
+# ----- Auth middleware (tolerant of quotes; allows GET/HEAD probes) -----
+class BearerAuth(BaseHTTPMiddleware):
+    async def dispatch(self, request, call_next):
+        # Agent Builder often probes with GET/HEAD and no auth
+        if request.method in ("GET", "HEAD", "OPTIONS"):
+            return await call_next(request)
+
+        required = (os.environ.get("MCP_BEARER_TOKEN") or "").strip()
+        auth = (request.headers.get("authorization") or "").strip()
+
+        # Strip accidental surrounding quotes:  "Bearer abc..." -> Bearer abc...
+        if len(auth) >= 2 and auth[0] == '"' and auth[-1] == '"':
+            auth = auth[1:-1].strip()
+
+        # Accept either "Bearer <token>" or "<token>"
+        token = auth.split(" ", 1)[1].strip() if auth.lower().startswith("bearer ") else auth
+
+        if required and token != required:
+            return JSONResponse({"error": "Unauthorized"}, status_code=401)
+
+        return await call_next(request)
+
+# Accept both /mcp and /mcp/ and disable implicit trailing-slash redirects
+app = Starlette(
+    redirect_slashes=False,
+    routes=[
+        Route("/healthz", healthz),
+        Mount("/mcp", mcp.streamable_http_app()),
+        Mount("/mcp/", mcp.streamable_http_app()),
+    ],
+)
 app.add_middleware(BearerAuth)
+
+if __name__ == "__main__":
+    import uvicorn
+    uvicorn.run(app, host="0.0.0.0", port=int(os.environ.get("PORT", "8080")))
