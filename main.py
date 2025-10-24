@@ -73,15 +73,28 @@ class BearerAuth(BaseHTTPMiddleware):
 
         return await call_next(request)
 
-# Accept both /mcp and /mcp/ and disable implicit trailing-slash redirects
+# ----- MCP probe for GET/HEAD so Agent Builder doesn't see 404 -----
+async def mcp_probe(_):
+    return JSONResponse({"status": "ok", "server": "GoogleAds-MCP"})
+
+# ----- App / Routes -----
 app = Starlette(
     routes=[
         Route("/healthz", healthz),
+
+        # Handle GET/HEAD probes at /mcp and /mcp/
+        Route("/mcp", mcp_probe, methods=["GET", "HEAD"]),
+        Route("/mcp/", mcp_probe, methods=["GET", "HEAD"]),
+
+        # Real MCP streamable HTTP app (POST and friends)
         Mount("/mcp", mcp.streamable_http_app()),
         Mount("/mcp/", mcp.streamable_http_app()),
     ],
 )
 app.add_middleware(BearerAuth)
+
+# Prevent '/mcp' -> '/mcp/' auto-redirects
+app.router.redirect_slashes = False
 
 if __name__ == "__main__":
     import uvicorn
