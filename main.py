@@ -75,7 +75,6 @@ class BearerAuth(BaseHTTPMiddleware):
 
 # Accept both /mcp and /mcp/ and disable implicit trailing-slash redirects
 app = Starlette(
-    redirect_slashes=False,
     routes=[
         Route("/healthz", healthz),
         Mount("/mcp", mcp.streamable_http_app()),
