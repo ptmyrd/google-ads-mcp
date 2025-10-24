@@ -1,5 +1,7 @@
-mcp
-starlette
-uvicorn
-google-ads
-protobuf
+mcp>=1.2
+starlette>=0.37
+uvicorn>=0.30
+google-ads>=24.0.0
+protobuf>=4.25
+# optional: only needed if you decide to run via Gunicorn instead of uvicorn
+# gunicorn>=21.2
