@@ -3,6 +3,7 @@ from starlette.applications import Starlette
 from starlette.responses import JSONResponse, PlainTextResponse
 from starlette.middleware.base import BaseHTTPMiddleware
 from starlette.routing import Mount, Route
+from starlette.types import Scope, Receive, Send  # NEW
 from mcp.server.fastmcp import FastMCP
 from google.ads.googleads.client import GoogleAdsClient
 from google.protobuf.json_format import MessageToDict
@@ -54,14 +55,14 @@ async def healthz(_):
 # ----- Auth middleware (tolerant of quotes; allows GET/HEAD probes) -----
 class BearerAuth(BaseHTTPMiddleware):
     async def dispatch(self, request, call_next):
-        # Agent Builder often probes with GET/HEAD and no auth
+        # Let GET/HEAD/OPTIONS pass (Agent Builder probes without auth)
         if request.method in ("GET", "HEAD", "OPTIONS"):
             return await call_next(request)
 
         required = (os.environ.get("MCP_BEARER_TOKEN") or "").strip()
         auth = (request.headers.get("authorization") or "").strip()
 
-        # Strip accidental surrounding quotes:  "Bearer abc..." -> Bearer abc...
+        # Strip accidental surrounding quotes
         if len(auth) >= 2 and auth[0] == '"' and auth[-1] == '"':
             auth = auth[1:-1].strip()
 
@@ -73,22 +74,25 @@ class BearerAuth(BaseHTTPMiddleware):
 
         return await call_next(request)
 
-# ----- MCP probe for GET/HEAD so Agent Builder doesn't see 404 -----
-async def mcp_probe(_):
-    return JSONResponse({"status": "ok", "server": "GoogleAds-MCP"})
+# ----- MCP HTTP entry: 200 for GET/HEAD; delegate POST to real MCP app -----
+mcp_http = mcp.streamable_http_app()
+
+async def mcp_entry(scope: Scope, receive: Receive, send: Send):
+    # Return 200 for GET/HEAD probes
+    if scope["type"] == "http" and scope.get("method") in ("GET", "HEAD"):
+        resp = JSONResponse({"status": "ok", "server": "GoogleAds-MCP"})
+        await resp(scope, receive, send)
+        return
+    # Delegate POST/stream to the MCP ASGI app
+    await mcp_http(scope, receive, send)
 
 # ----- App / Routes -----
 app = Starlette(
     routes=[
         Route("/healthz", healthz),
-
-        # Handle GET/HEAD probes at /mcp and /mcp/
-        Route("/mcp", mcp_probe, methods=["GET", "HEAD"]),
-        Route("/mcp/", mcp_probe, methods=["GET", "HEAD"]),
-
-        # Real MCP streamable HTTP app (POST and friends)
-        Mount("/mcp", mcp.streamable_http_app()),
-        Mount("/mcp/", mcp.streamable_http_app()),
+        # Single entry for both forms of the path; no 405s on POST
+        Mount("/mcp", app=mcp_entry),
+        Mount("/mcp/", app=mcp_entry),
     ],
 )
 app.add_middleware(BearerAuth)
